@@ -74,10 +74,22 @@ Make it engaging, professional, and highlight the product's key benefits.`;
 
     return NextResponse.json({ script });
   } catch (error) {
-    console.error('Script generation error:', error);
+    const status = typeof error === 'object' && error && 'status' in error
+      ? Number((error as { status: unknown }).status)
+      : 0;
+    const code = typeof error === 'object' && error && 'code' in error
+      ? String((error as { code: unknown }).code)
+      : '';
+    console.error('Script generation error:', code || status || (error instanceof Error ? error.name : 'unknown'));
+
+    const invalidKey = status === 401 || code === 'invalid_api_key';
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to generate script' },
-      { status: 500 }
+      {
+        error: invalidKey
+          ? 'OPENAI_API_KEY is not a valid OpenAI key. Create one at platform.openai.com/api-keys and update it in the Render environment.'
+          : 'Failed to generate script',
+      },
+      { status: invalidKey ? 401 : 500 }
     );
   }
 } 
