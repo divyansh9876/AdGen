@@ -21,21 +21,39 @@ export async function POST(request: Request) {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
+        '--disable-extensions',
+        '--no-first-run',
+        '--disable-background-networking',
       ],
     });
 
     const page = await browser.newPage();
-    
-    // Set a reasonable timeout
-    await page.setDefaultNavigationTimeout(30000);
-    
-    // Enable JavaScript
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    );
+    await page.setViewport({ width: 1280, height: 800 });
+    await page.setDefaultNavigationTimeout(60000);
     await page.setJavaScriptEnabled(true);
-    
-    await page.goto(url, { 
-      waitUntil: 'networkidle0',
-      timeout: 30000
+
+    // Amazon and Shopify keep analytics requests open, so networkidle never arrives.
+    await page.setRequestInterception(true);
+    page.on('request', (request) => {
+      const type = request.resourceType();
+      if (type === 'image' || type === 'media' || type === 'font' || type === 'stylesheet') {
+        request.abort().catch(() => {});
+      } else {
+        request.continue().catch(() => {});
+      }
     });
+
+    await page.goto(url, {
+      waitUntil: 'domcontentloaded',
+      timeout: 60000,
+    });
+
+    await page.waitForSelector('#productTitle, #landingImage, h1, .product__title, .product-title', {
+      timeout: 15000,
+    }).catch(() => {});
 
     // Extract product information based on the URL type (Amazon or Shopify)
     const isAmazon = url.includes('amazon');
@@ -58,8 +76,14 @@ export async function POST(request: Request) {
     if (browser) {
       await browser.close();
     }
+    const message = error instanceof Error ? error.message : 'Failed to scrape product data';
+    const timedOut = error instanceof Error && (error.name === 'TimeoutError' || /timeout/i.test(message));
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to scrape product data' },
+      {
+        error: timedOut
+          ? 'The product page took too long to load. Try again with a direct Amazon or Shopify product link.'
+          : message,
+      },
       { status: 500 }
     );
   }
