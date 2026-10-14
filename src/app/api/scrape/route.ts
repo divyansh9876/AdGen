@@ -7,9 +7,33 @@ export async function POST(request: Request) {
   try {
     const { url } = await request.json();
 
-    if (!url) {
+    if (!url || typeof url !== 'string') {
       return NextResponse.json(
         { error: 'URL is required' },
+        { status: 400 }
+      );
+    }
+
+    let target: URL;
+    try {
+      target = new URL(url);
+    } catch {
+      return NextResponse.json(
+        { error: 'Enter a valid http or https URL' },
+        { status: 400 }
+      );
+    }
+
+    if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+      return NextResponse.json(
+        { error: 'Enter a valid http or https URL' },
+        { status: 400 }
+      );
+    }
+
+    if (isPrivateHost(target.hostname)) {
+      return NextResponse.json(
+        { error: 'That address cannot be scraped' },
         { status: 400 }
       );
     }
@@ -55,18 +79,24 @@ export async function POST(request: Request) {
       timeout: 15000,
     }).catch(() => {});
 
-    // Extract product information based on the URL type (Amazon or Shopify)
-    const isAmazon = url.includes('amazon');
-    const isShopify = url.includes('shopify');
+    const host = target.hostname.toLowerCase();
+    const isAmazon = host.includes('amazon.') || host.startsWith('amzn.') || host.includes('.amzn.');
+    const isShopify = host.includes('myshopify.com') || host.includes('shopify.');
 
     let product: Product;
-
-    if (isAmazon) {
-      product = await scrapeAmazon(page);
-    } else if (isShopify) {
-      product = await scrapeShopify(page);
-    } else {
-      throw new Error('Unsupported website. Please provide an Amazon or Shopify product URL.');
+    try {
+      if (isAmazon) {
+        product = await scrapeAmazon(page);
+      } else if (isShopify) {
+        product = await scrapeShopify(page);
+      } else {
+        product = await scrapeGeneric(page);
+      }
+    } catch (siteError) {
+      if (!isAmazon && !isShopify) {
+        throw siteError;
+      }
+      product = await scrapeGeneric(page);
     }
 
     await browser.close();
@@ -81,7 +111,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error: timedOut
-          ? 'The product page took too long to load. Try again with a direct Amazon or Shopify product link.'
+          ? 'The page took too long to load. Try the link again.'
           : message,
       },
       { status: 500 }
@@ -356,6 +386,161 @@ async function scrapeShopify(page: Page): Promise<Product> {
     price,
     description,
     features,
+    url: page.url(),
+  };
+}
+
+function isPrivateHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (
+    host === 'localhost' ||
+    host.endsWith('.local') ||
+    host.endsWith('.internal') ||
+    host === '0.0.0.0' ||
+    host === '::1'
+  ) {
+    return true;
+  }
+
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!ipv4) {
+    return false;
+  }
+
+  const a = Number(ipv4[1]);
+  const b = Number(ipv4[2]);
+  return (
+    a === 10 ||
+    a === 127 ||
+    a === 0 ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168)
+  );
+}
+
+async function scrapeGeneric(page: Page): Promise<Product> {
+  const data = await page.evaluate(() => {
+    const absolute = (value: string) => {
+      try {
+        return new URL(value, location.href).href;
+      } catch {
+        return '';
+      }
+    };
+
+    const meta = (selector: string) =>
+      document.querySelector(selector)?.getAttribute('content')?.trim() || '';
+
+    const asText = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+
+    const records: Array<Record<string, unknown>> = [];
+    const visit = (node: unknown) => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        node.forEach(visit);
+        return;
+      }
+      const record = node as Record<string, unknown>;
+      const type = record['@type'];
+      const types = Array.isArray(type) ? type : [type];
+      if (types.some((item) => typeof item === 'string' && /product/i.test(item))) {
+        records.push(record);
+      }
+      if (record['@graph']) visit(record['@graph']);
+    };
+
+    document.querySelectorAll('script[type="application/ld+json"]').forEach((script) => {
+      try {
+        visit(JSON.parse(script.textContent || ''));
+      } catch {
+        // Pages often include incomplete JSON-LD.
+      }
+    });
+
+    const product = records[0];
+    const offerSource = product?.offers;
+    const offer = (Array.isArray(offerSource) ? offerSource[0] : offerSource) as
+      | Record<string, unknown>
+      | undefined;
+    const amount = offer?.price ?? offer?.lowPrice;
+    const currency = asText(offer?.priceCurrency);
+    const structuredPrice = amount ? `${currency} ${amount}`.trim() : '';
+
+    const structuredImages = (() => {
+      const image = product?.image;
+      if (!image) return [] as string[];
+      const values = Array.isArray(image) ? image : [image];
+      return values.map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object' && 'url' in item) {
+          return asText((item as Record<string, unknown>).url);
+        }
+        return '';
+      });
+    })();
+
+    const title =
+      asText(product?.name) ||
+      meta('meta[property="og:title"]') ||
+      meta('meta[name="twitter:title"]') ||
+      document.querySelector('h1')?.textContent?.trim() ||
+      document.title.trim();
+
+    const description =
+      asText(product?.description) ||
+      meta('meta[property="og:description"]') ||
+      meta('meta[name="description"]') ||
+      meta('meta[name="twitter:description"]');
+
+    const price =
+      structuredPrice ||
+      meta('meta[property="product:price:amount"]') ||
+      meta('meta[property="og:price:amount"]') ||
+      document.querySelector('[itemprop="price"]')?.getAttribute('content') ||
+      document.querySelector('[itemprop="price"]')?.textContent?.trim() ||
+      '';
+
+    const images = [
+      ...structuredImages,
+      meta('meta[property="og:image"]'),
+      meta('meta[property="og:image:url"]'),
+      meta('meta[name="twitter:image"]'),
+      ...Array.from(document.querySelectorAll('img')).map(
+        (img) => img.currentSrc || img.getAttribute('src') || img.getAttribute('data-src') || ''
+      ),
+    ]
+      .map((src) => absolute(src))
+      .filter((src) => src.startsWith('http') && !/logo|icon|sprite|pixel|tracking|badge/i.test(src));
+
+    const features = Array.from(document.querySelectorAll('li'))
+      .map((item) => item.textContent?.trim() || '')
+      .filter((item) => item.length > 2 && item.length < 180);
+
+    return {
+      title,
+      description,
+      price,
+      images: [...new Set(images)].slice(0, 8),
+      features: [...new Set(features)].slice(0, 8),
+    };
+  });
+
+  if (!data.title) {
+    throw new Error('Could not find a title on this page');
+  }
+
+  if (data.images.length === 0) {
+    throw new Error('Could not find images on this page');
+  }
+
+  return {
+    title: data.title,
+    image: data.images[0],
+    images: data.images.slice(1),
+    price: data.price,
+    description: data.description || data.title,
+    features: data.features,
     url: page.url(),
   };
 } 

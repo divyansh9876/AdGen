@@ -20,12 +20,12 @@ export function UrlInputForm() {
         body: JSON.stringify({ url }),
       });
 
+      const body = await response.json().catch(() => null);
       if (!response.ok) {
-        throw new Error('Failed to scrape product data');
+        throw new Error(body?.error || 'Failed to scrape product data');
       }
 
-      const product = await response.json();
-      setProduct(product);
+      setProduct(body);
       setStep('product');
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Something went wrong');
@@ -39,14 +39,14 @@ export function UrlInputForm() {
       <CardHeader>
         <CardTitle>Generate AI Video Ad</CardTitle>
         <CardDescription>
-          Paste a product URL from Amazon or Shopify to generate a video ad
+          Paste any product page URL to generate a video ad
         </CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <Input
             type="url"
-            placeholder="https://www.amazon.com/product-url"
+            placeholder="https://example.com/product"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             required
