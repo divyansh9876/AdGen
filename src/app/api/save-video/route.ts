@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { writeFile } from 'fs/promises';
+import { mkdir, writeFile } from 'fs/promises';
 import path from 'path';
 
 export async function POST(request: Request) {
@@ -20,6 +20,7 @@ export async function POST(request: Request) {
 
     // Create the file path
     const downloadsDir = path.join(process.cwd(), 'downloads');
+    await mkdir(downloadsDir, { recursive: true });
     const filePath = path.join(downloadsDir, video.name);
 
     // Write the file

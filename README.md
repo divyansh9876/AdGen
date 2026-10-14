@@ -43,8 +43,8 @@ A full-stack application that turns **product URLs into scroll-stopping video ad
 
 ```bash
 # 1. Clone this repo
-git clone https://github.com/Rakshath66/adgen.git
-cd adgen
+git clone https://github.com/divyansh9876/AdGen.git
+cd AdGen
 
 # 2. Install dependencies
 npm install
@@ -68,6 +68,22 @@ OPENAI_API_KEY=your_openai_api_key
 ```
 
 > ⚠️ Required for script generation via OpenAI
+
+---
+
+## Deploy on Render
+
+This repo includes a Render blueprint (`render.yaml`) and a `Dockerfile`. Puppeteer needs Chromium, so the service runs as a Docker web service and listens on Render's `PORT`.
+
+1. Push this repo to GitHub.
+2. In [Render](https://render.com), choose **New → Blueprint** and select this repository.
+3. When Render asks for `OPENAI_API_KEY`, paste your key. It stays in the service environment and is not committed.
+
+One-click blueprint:
+
+[Deploy to Render](https://render.com/deploy?repo=https://github.com/divyansh9876/AdGen)
+
+The free instance has 512 MB of RAM. Product scraping launches Chrome, so a busy scrape can run out of memory on the free plan. If that happens, move the `adgen` service to a larger instance.
 
 ---
 
